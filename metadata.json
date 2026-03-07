@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Virtual Try-On Pro",
+  "description": "A high-quality virtual try-on tool powered by Gemini 3 Pro. Upload a photo of yourself and a garment to generate a realistic preview.",
+  "requestFramePermissions": []
+}
