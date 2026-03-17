@@ -99,4 +99,4 @@ Mọi đóng góp nhằm cải thiện tính năng hoặc khắc phục lỗi đ
 Dự án được phát hành dưới giấy phép MIT.
 
 ---
-*Phát triển bởi đội ngũ đam mê AI & Fashion.* 🚀
+*Phát triển bởi một mình tôi* 🚀
