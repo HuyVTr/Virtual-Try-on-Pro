@@ -5,6 +5,20 @@ export interface UploadedImage {
   mimeType: string;
 }
 
+export type AssetType = 'image' | 'video' | 'analysis';
+
+export interface SavedItem {
+  id?: number;
+  type: AssetType;
+  data: string; // Base64 or URL
+  thumbnail?: string; // Base64 thumbnail
+  prompt: string;
+  model: string;
+  module: AppModule;
+  createdAt: number;
+  metadata?: any;
+}
+
 export enum GenerationStatus {
   IDLE = 'IDLE',
   LOADING = 'LOADING',
@@ -15,8 +29,21 @@ export enum GenerationStatus {
 export enum AppModule {
   TRY_ON = 'TRY_ON',
   VIDEO = 'VIDEO',
+  TEXT_TO_VIDEO = 'TEXT_TO_VIDEO',
   STUDIO = 'STUDIO',
   VIDEO_ANALYSIS = 'VIDEO_ANALYSIS',
+  LIBRARY = 'LIBRARY',
+}
+
+export enum Language {
+  VI = 'VI',
+  EN = 'EN',
+}
+
+export enum Theme {
+  LIGHT = 'light',
+  DARK = 'dark',
+  SYSTEM = 'system',
 }
 
 export type StudioMode = 'TEXT_TO_IMAGE' | 'ENHANCE' | 'UPSCALE';
@@ -48,6 +75,7 @@ export interface SceneAnalysis {
   visual_prompt: string;
   audio: string;
   tech_specs: string;
+  items: string[];
   frameBase64?: string; // Để hiển thị lại ảnh đã cắt
 }
 
@@ -82,35 +110,25 @@ export const AVAILABLE_MODELS: Model[] = [
     pros: ['Chi tiết cực cao', 'Ánh sáng chân thực', 'Hỗ trợ Upscale 4K'],
     cons: ['Giới hạn số lượng (100/ngày)', 'Có thể không ổn định (Preview)'],
   },
-  // NHÓM VIDEO (VIDEO MODE - PAID PREVIEW)
+  // NHÓM VIDEO (VIDEO MODE - GEMINI AI STUDIO PREVIEW)
   {
     id: 'veo-3.1-fast-generate-preview',
     name: 'Veo 3.1 Fast (Turbo)',
-    description: 'Video tốc độ cao. Yêu cầu bật Billing.',
-    dailyLimit: '10 RPM | Billing Required (~$0.15/sec)',
-    supportedModules: [AppModule.VIDEO],
-    pros: ['Render nhanh', 'Phù hợp test chuyển động'],
+    description: 'Video tốc độ cao, ổn định nhất. Yêu cầu bật Billing.',
+    dailyLimit: '15 RPM | Billing Required (~$0.15/sec)',
+    supportedModules: [AppModule.VIDEO, AppModule.TEXT_TO_VIDEO],
+    pros: ['Render nhanh', 'Phù hợp test chuyển động', 'Tính ổn định cao'],
     cons: ['Cần trả phí (Pay-as-you-go)', 'Không có Free Tier'],
   },
   {
     id: 'veo-3.1-generate-preview',
     name: 'Veo 3.1 Standard (Cinema)',
-    description: 'Chất lượng điện ảnh. Yêu cầu bật Billing.',
-    dailyLimit: '2 RPM | Billing Required (~$0.40/sec)',
-    supportedModules: [AppModule.VIDEO],
-    pros: ['Chất lượng tốt nhất', 'Vật lý chân thực'],
+    description: 'Chất lượng điện ảnh đỉnh cao. Yêu cầu bật Billing.',
+    dailyLimit: '5 RPM | Billing Required (~$0.40/sec)',
+    supportedModules: [AppModule.VIDEO, AppModule.TEXT_TO_VIDEO],
+    pros: ['Chất lượng tốt nhất', 'Vật lý chân thực', 'Độ chi tiết 4K'],
     cons: ['Chi phí cao', 'Thời gian chờ >60s', 'Cần thẻ thanh toán'],
   },
-  // NHÓM STUDIO (PAID)
-  {
-    id: 'imagen-3.0-generate-001',
-    name: 'Imagen 3 (Photorealistic)',
-    description: 'Model chuyên dụng tạo ảnh thực tế nhất của Google.',
-    dailyLimit: 'Billing Required (Tính phí)',
-    supportedModules: [AppModule.STUDIO],
-    pros: ['Ánh sáng quang học chuẩn xác', 'Vẽ chữ (Text rendering) cực tốt'],
-    cons: ['Cần bật Billing (Tính phí)', 'Không có Free Tier'],
-  }
 ];
 
 export interface TryOnRequest {
@@ -131,11 +149,6 @@ export const UPSCALE_MODEL_METADATA: Record<string, Partial<Model>> = {
     pros: ['Tốc độ cực nhanh (<3s)', 'Miễn phí hoàn toàn', 'Tốt cho ảnh hoạt hình/Line art'],
     cons: ['Chỉ tăng kích thước, không thêm chi tiết', 'Có thể bị bệt màu da', 'Không hỗ trợ 4K sắc nét']
   },
-  'imagen-3.0-generate-001': {
-    description: 'Creative Upscale (Sáng tạo lại): Model sẽ "vẽ lại" bức ảnh ở độ phân giải cao hơn. Thích hợp nếu ảnh gốc quá mờ hoặc cần thay đổi phong cách.',
-    pros: ['Thêm chi tiết siêu thực (lông mi, tóc)', 'Cân chỉnh lại ánh sáng chuẩn Studio', 'Cứu được ảnh gốc chất lượng rất thấp'],
-    cons: ['CÓ THỂ LÀM THAY ĐỔI KHUÔN MẶT', 'Tính phí (Billing Required)', 'Không trung thực với ảnh gốc']
-  }
 };
 
 // Metadata riêng cho chế độ Enhance (AI Photo Studio)
@@ -150,9 +163,4 @@ export const ENHANCE_MODEL_METADATA: Record<string, Partial<Model>> = {
     pros: ['Tốc độ tức thì', 'Làm tươi màu ảnh', 'Miễn phí hoàn toàn'],
     cons: ['Khả năng khử mờ kém hơn Pro', 'Không tái tạo được chi tiết đã mất']
   },
-  'imagen-3.0-generate-001': {
-    description: 'Creative Enhance: "Vẽ lại" bức ảnh để đạt chất lượng Studio. Có thể thay đổi nhẹ cấu trúc ảnh để đẹp hơn.',
-    pros: ['Biến ảnh chụp vội thành ảnh nghệ thuật', 'Ánh sáng chuẩn điện ảnh', 'Thêm chi tiết nền'],
-    cons: ['Thay đổi tính chất ảnh gốc', 'Tính phí (Billing Required)']
-  }
 };

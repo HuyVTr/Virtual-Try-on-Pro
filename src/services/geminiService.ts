@@ -8,15 +8,15 @@ import { UploadedImage, BackgroundConfig, StudioMode, SceneAnalysis } from "../t
  * @returns A user-friendly error string.
  */
 const parseGeminiError = (error: any): string => {
-  const errorMessage = (error.message || '').toLowerCase();
-  const errorStatus = (error.status || '').toLowerCase(); // gRPC status
-  
+  const errorMessage = String(error.message || '').toLowerCase();
+  const errorStatus = String(error.status || '').toLowerCase(); // gRPC status
+
   console.error("Gemini API Error Raw:", error);
 
   if (errorMessage.includes("api key not valid")) {
     return "API_KEY_INVALID";
   }
-  
+
   // Billing-related errors
   if (errorStatus.includes('permission_denied') || errorMessage.includes('403') || errorMessage.includes('billing')) {
     if (errorMessage.includes('billing account not found')) {
@@ -33,7 +33,7 @@ const parseGeminiError = (error: any): string => {
   if (errorStatus.includes('resource_exhausted') || errorMessage.includes('429') || errorMessage.includes('quota')) {
     return 'Lỗi: Bạn đã vượt quá hạn mức (quota) cho phép của model này. Vui lòng thử lại sau.';
   }
-  
+
   // Invalid argument or malformed request
   if (errorStatus.includes('invalid_argument')) {
     return 'Lỗi: Yêu cầu không hợp lệ. Có thể do prompt hoặc tham số ảnh không đúng định dạng.';
@@ -52,7 +52,7 @@ export const checkApiKeyAvailability = async (): Promise<boolean> => {
   if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
     return await win.aistudio.hasSelectedApiKey();
   }
-  return !!import.meta.env.VITE_GEMINI_API_KEY;
+  return !!localStorage.getItem('gem_lab_api_key') || !!import.meta.env.VITE_GEMINI_API_KEY;
 };
 
 /**
@@ -71,22 +71,22 @@ export const openApiKeySelection = async (): Promise<void> => {
 export const generateTryOnImage = async (
   personImage: UploadedImage,
   garmentImage: UploadedImage,
-  userPrompt: string = "", 
+  userPrompt: string = "",
   modelName: string,
   backgroundConfig: BackgroundConfig
 ): Promise<string> => {
-  const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+  const apiKey = localStorage.getItem('gem_lab_api_key') || import.meta.env.VITE_GEMINI_API_KEY;
+  const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: modelName });
 
   let finalPrompt = '';
   const payloadParts: Part[] = [];
-  
+
   payloadParts.push(
     { inlineData: { mimeType: personImage.mimeType, data: personImage.base64.split(',')[1] || personImage.base64 } },
     { inlineData: { mimeType: garmentImage.mimeType, data: garmentImage.base64.split(',')[1] || garmentImage.base64 } }
   );
 
-  const clothAndModelDesc = userPrompt.trim() || "the specified clothing";
 
   switch (backgroundConfig.bgMode) {
     case 'TEXT_PROMPT':
@@ -106,7 +106,7 @@ export const generateTryOnImage = async (
       3. KẾT QUẢ: Chỉ trả về hình ảnh kết quả cuối cùng.
       `;
       break;
-      
+
     case 'IMAGE_UPLOAD':
       if (backgroundConfig.bgImage) {
         payloadParts.push({ inlineData: { mimeType: backgroundConfig.bgImage.mimeType, data: backgroundConfig.bgImage.base64.split(',')[1] || backgroundConfig.bgImage.base64 } });
@@ -160,18 +160,21 @@ export const generateTryOnImage = async (
       `;
       break;
   }
-  
+
   payloadParts.unshift({ text: finalPrompt });
 
-  const imageConfig: { imageSize?: string; aspectRatio: string } = { aspectRatio: '3:4' };
-  if (modelName.includes('pro')) {
-    imageConfig.imageSize = '2K';
+  const generationConfig: any = {};
+  if (modelName.includes('imagen')) {
+    generationConfig.aspectRatio = '3:4';
+    if (modelName.includes('pro')) {
+      generationConfig.imageSize = '2K';
+    }
   }
 
   try {
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: payloadParts }],
-      generationConfig: { ...imageConfig } as any
+      generationConfig: generationConfig
     });
 
     const response = result.response;
@@ -190,14 +193,15 @@ export const generateTryOnImage = async (
 };
 
 /**
- * Helper: Extracts 4 keyframes from a video file using HTML5 Canvas.
+ * Helper: Extracts keyframes from a video file using HTML5 Canvas.
  */
-const extractFramesFromVideo = async (videoFile: File): Promise<string[]> => {
+export const extractFramesFromVideo = (videoFile: File): Promise<{ frames: string[], timestamps: string[] }> => {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const frames: string[] = [];
+    const timestamps: string[] = [];
     const url = URL.createObjectURL(videoFile);
 
     video.src = url;
@@ -209,27 +213,35 @@ const extractFramesFromVideo = async (videoFile: File): Promise<string[]> => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const duration = video.duration;
-      // Extract at 10%, 30%, 60%, 90%
-      const timePoints = [0.1, 0.3, 0.6, 0.9].map(p => p * duration);
+      
+      // Extract 8 points across the video duration
+      const points = [0.05, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 0.98];
+      const timePoints = points.map(p => p * duration);
 
       try {
         for (const time of timePoints) {
           video.currentTime = time;
           await new Promise<void>(r => {
-              const seekHandler = () => {
-                  video.removeEventListener('seeked', seekHandler);
-                  r();
-              };
-              video.addEventListener('seeked', seekHandler);
+            const seekHandler = () => {
+              video.removeEventListener('seeked', seekHandler);
+              r();
+            };
+            video.addEventListener('seeked', seekHandler);
           });
-          
+
           if (ctx) {
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              // Compress to JPEG 0.7 to reduce payload size
-              frames.push(canvas.toDataURL('image/jpeg', 0.7)); 
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Compress to JPEG 0.7 to reduce payload size
+            frames.push(canvas.toDataURL('image/jpeg', 0.7));
+            
+            // Format timestamp: MM:SS
+            const mins = Math.floor(time / 60);
+            const secs = Math.floor(time % 60);
+            const ts = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            timestamps.push(ts);
           }
         }
-        resolve(frames);
+        resolve({ frames, timestamps });
       } catch (e) {
         reject(e);
       } finally {
@@ -239,36 +251,39 @@ const extractFramesFromVideo = async (videoFile: File): Promise<string[]> => {
       }
     };
 
-    video.onerror = (e) => {
-        URL.revokeObjectURL(url);
-        reject(new Error("Không thể đọc file video. Vui lòng kiểm tra định dạng."));
+    video.onerror = (_e) => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Không thể đọc file video. Vui lòng kiểm tra định dạng."));
     };
   });
 };
 
-/**
- * Analyzes video content by extracting frames and sending to Gemini.
- */
 export const analyzeVideoContent = async (videoFile: File, modelName: string): Promise<SceneAnalysis[]> => {
-  const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+  const apiKey = localStorage.getItem('gem_lab_api_key') || import.meta.env.VITE_GEMINI_API_KEY;
+  const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: modelName });
 
-  // 1. Extract frames
-  const frames = await extractFramesFromVideo(videoFile);
-  
+  // 1. Extract frames and timestamps
+  const { frames, timestamps } = await extractFramesFromVideo(videoFile);
+
   // 2. Prepare Payload
   const payloadParts: Part[] = frames.map(base64 => ({
     inlineData: { mimeType: 'image/jpeg', data: base64.split(',')[1] }
   }));
 
   const prompt = `
-    Bạn là một chuyên gia phân tích video và đạo diễn hình ảnh (Director of Photography).
-    Hãy phân tích 4 khung hình này như một chuỗi liên tục của một video.
-    Nhiệm vụ: Trả về kết quả dưới dạng JSON Array thuần túy (không có markdown block), trong đó mỗi object đại diện cho một cảnh tương ứng với ảnh và chứa các trường sau:
-    - "timestamp": Khoảng thời gian ước lượng (ví dụ: '00:00 - 00:05').
-    - "visual_prompt": Mô tả chi tiết hình ảnh để dùng cho AI tạo video (Chủ thể, Hành động, Ánh sáng, Màu sắc). Viết bằng tiếng Anh chuẩn prompt.
-    - "audio": Gợi ý âm thanh hoặc lời thoại phù hợp.
-    - "tech_specs": Góc máy (Wide/Close-up), Chuyển động camera (Pan/Zoom/Static).
+    VAI TRÒ: Chuyên gia Storyboard và Đạo diễn Hình ảnh.
+    NHIỆM VỤ: Phân tích chuỗi ${frames.length} khung hình từ một video để tạo ra bảng phân cảnh chi tiết.
+    
+    THÔNG TIN THỜI GIAN CỦA TỪNG KHUNG HÌNH (theo thứ tự):
+    ${timestamps.map((t, i) => `Ảnh ${i+1}: ${t}`).join(', ')}
+
+    YÊU CẦU TRẢ VỀ: Một JSON Array thuần túy (không kèm markdown), mỗi object chứa:
+    - "timestamp": Sử dụng đúng mốc thời gian đã cung cấp phía trên.
+    - "visual_prompt": Mô tả hình ảnh chuyên sâu (English). Tập trung vào chuyển động, ánh sáng, góc máy.
+    - "audio": Gợi ý âm thanh/nhạc nền phù hợp với cảnh.
+    - "tech_specs": Chi tiết kỹ thuật (Shot type, Camera movement).
+    - "items": Các đối tượng/phụ kiện xuất hiện trong cảnh (Array of strings).
   `;
 
   payloadParts.unshift({ text: prompt });
@@ -278,13 +293,36 @@ export const analyzeVideoContent = async (videoFile: File, modelName: string): P
   });
 
   const text = result.response.text();
-  // Clean up markdown if present
   const jsonString = text.replace(/```json/g, '').replace(/```/g, '').trim();
-  
+
   try {
-    const analysis = JSON.parse(jsonString) as SceneAnalysis[];
-    // Attach frames back to result for UI display
-    return analysis.map((scene, index) => ({ ...scene, frameBase64: frames[index] }));
+    const analysis = JSON.parse(jsonString);
+    
+    // Normalize data to ensure string fields are actually strings (not objects)
+    const normalizedAnalysis = (analysis as any[]).map((scene, index) => {
+      // Helper to ensure target is string
+      const ensureString = (val: any): string => {
+        if (typeof val === 'string') return val;
+        if (typeof val === 'object' && val !== null) {
+          return Object.entries(val)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(', ');
+        }
+        return String(val || '');
+      };
+
+      return {
+        ...scene,
+        visual_prompt: ensureString(scene.visual_prompt),
+        audio: ensureString(scene.audio),
+        tech_specs: ensureString(scene.tech_specs),
+        items: Array.isArray(scene.items) ? scene.items.map(String) : [],
+        frameBase64: frames[index],
+        timestamp: timestamps[index] // Force match video extraction logic
+      } as SceneAnalysis;
+    });
+
+    return normalizedAnalysis;
   } catch (e) {
     console.error("JSON Parse Error:", text);
     throw new Error("Không thể phân tích phản hồi từ AI. Vui lòng thử lại.");
@@ -297,70 +335,197 @@ export const analyzeVideoContent = async (videoFile: File, modelName: string): P
 export const generateVideo = async (
   inputImage: UploadedImage,
   prompt: string,
-  modelName: string,
-  duration: number 
+  modelName: string
 ): Promise<string> => {
-  // Lưu ý: Veo chưa được hỗ trợ chính thức trong SDK client-side @google/generative-ai
-  // Đoạn code này sử dụng REST API hoặc giả lập call để tránh lỗi TypeScript
-  const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
-  
+  const apiKey = localStorage.getItem('gem_lab_api_key') || import.meta.env.VITE_GEMINI_API_KEY;
+  const baseUrl = "/google-api/v1beta";
+
   const videoPrompt = `
-    VAI TRÒ: Bạn là Gem-Lab Assistant, Đạo diễn hình ảnh động (Video Director).
-    CHẾ ĐỘ: VIDEO (Image-to-Video).
-    ĐẦU VÀO:
-    1. Ảnh gốc: Image 1.
-    2. Yêu cầu chuyển động: "${prompt.trim() || "Chuyển động điện ảnh, camera quay chậm, tự nhiên"}"
-    NHIỆM VỤ:
-    Tạo ra một đoạn video ngắn, chất lượng cao từ ảnh gốc dựa trên mô tả chuyển động.
+    VAI TRÒ: Video Director.
+    NHIỆM VỤ: Tạo video từ ảnh gốc.
+    YÊU CẦU CHUYỂN ĐỘNG: "${prompt.trim() || "Cinematic motion, natural movement"}"
   `;
 
   try {
-    // Ép kiểu any cho model để truy cập method generateVideos (Beta feature)
-    const model: any = genAI.getGenerativeModel({ model: modelName });
-    
-    if (typeof model.generateVideos !== 'function') {
-        throw new Error("Thư viện hiện tại chưa hỗ trợ tạo Video (Veo). Vui lòng cập nhật SDK hoặc kiểm tra lại cấu hình.");
-    }
+    console.info(`[Gem-Lab] Khôi phục Logic ổn định cho: ${modelName}...`);
 
-    let operation = await model.generateVideos({
-      prompt: videoPrompt,
-      image: { imageBytes: inputImage.base64.split(',')[1] || inputImage.base64, mimeType: inputImage.mimeType },
-      config: { 
-        numberOfVideos: 1, 
-        resolution: '720p', 
-        aspectRatio: '9:16',
-        durationSecs: duration 
+    const endpoint = `${baseUrl}/models/${modelName}:predictLongRunning?key=${apiKey}`;
+
+    const requestBody = {
+      instances: [{
+        prompt: videoPrompt,
+        referenceImages: [{
+          image: {
+            bytesBase64Encoded: inputImage.base64.split(',')[1] || inputImage.base64,
+            mimeType: inputImage.mimeType
+          },
+          referenceType: "FIRST_FRAME"
+        }]
+      }],
+      parameters: {
+        personGeneration: "allow_adult"
       }
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
     });
 
-    const pollingInterval = modelName === 'veo-3.1-generate-preview' ? 10000 : 5000;
-
-    while (!operation.done) {
-      await new Promise(resolve => setTimeout(resolve, pollingInterval));
-      // Giả lập polling
-      operation = await (genAI as any).getVideosOperation ? (genAI as any).getVideosOperation({ operation: operation }) : operation;
-    }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) {
-       // Check for billing specific error from Veo API
-       const responseError = operation.response?.error;
-       if (responseError && responseError.code === 403) { // Assuming 403 is permission denied/billing error
-           throw new Error("Lỗi 403: Vui lòng bật Billing trên Google Cloud để dùng Veo.");
-       }
-       throw new Error("Tạo video thất bại hoặc không nhận được liên kết. Nguyên nhân có thể do nội dung không phù hợp hoặc sự cố về thanh toán/hạn mức.");
-    }
-
-    const response = await fetch(`${downloadLink}&key=${import.meta.env.VITE_GEMINI_API_KEY}`);
     if (!response.ok) {
-      throw new Error("Không thể tải xuống file video đã tạo. Liên kết có thể đã hết hạn.");
+        const errorClone = response.clone();
+        const status = response.status;
+        let errMsg = `Lỗi hệ thống (${status})`;
+        try {
+            const data = await response.json();
+            errMsg = data.error?.message || errMsg;
+        } catch (e) {
+            errMsg = await errorClone.text();
+        }
+        throw new Error(errMsg);
     }
+
+    const initialOperation = await response.json();
+    let operation = initialOperation;
+    console.info(`[Gem-Lab] Task: ${operation.name} đã được tạo.`);
+
+    // 2. Polling (Chờ video render)
+    const maxAttempts = 120;
+    let attempts = 0;
     
-    const blob = await response.blob();
-    return URL.createObjectURL(blob);
+    while (!operation.done && attempts < maxAttempts) {
+      attempts++;
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      const pollResponse = await fetch(`${baseUrl}/${operation.name}?key=${apiKey}`);
+      if (pollResponse.ok) {
+        operation = await pollResponse.json();
+        console.log(`[Gem-Lab] Trạng thái xử lý (${attempts})...`);
+      }
+    }
+
+    if (!operation.done) throw new Error("Quá thời gian render trên máy chủ Google.");
+
+    // 3. Xử lý kết quả trả về
+    const videoUri = 
+        operation.response?.video?.uri ||
+        operation.response?.generatedVideos?.[0]?.video?.uri || 
+        operation.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
+
+    if (!videoUri) {
+        console.error("[Gem-Lab] Response Full:", operation);
+        throw new Error("Không thể lấy đường dẫn video từ phản hồi.");
+    }
+
+    const downloadRes = await fetch(`${videoUri}&key=${apiKey}`);
+    if (!downloadRes.ok) throw new Error("Lỗi tải video từ server Google.");
+    
+    const blob = await downloadRes.blob();
+    
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("Lỗi chuyển đổi dữ liệu video."));
+        reader.readAsDataURL(blob);
+    });
 
   } catch (error: any) {
-    throw new Error(parseGeminiError(error));
+    console.error("[Gem-Lab] Error in generateVideo:", error);
+    throw error;
+  }
+};
+
+/**
+ * Text-to-Video generation using Veo 3.1
+ */
+export const generateTextToVideo = async (
+  videoPrompt: string,
+  modelId: string = 'veo-3.1-fast-generate-preview'
+): Promise<string> => {
+  try {
+    const apiKey = localStorage.getItem('gem_lab_api_key') || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) throw new Error("API_KEY_INVALID");
+
+    const baseUrl = "/google-api/v1beta";
+    const modelName = modelId;
+    
+    const formattedPrompt = `
+      VAI TRÒ: Video Director.
+      NHIỆM VỤ: Tạo video từ mô tả văn bản.
+      YÊU CẦU SÁNG TẠO: "${videoPrompt.trim()}"
+    `;
+
+    const endpoint = `${baseUrl}/models/${modelName}:predictLongRunning?key=${apiKey}`;
+
+    const requestBody = {
+      instances: [{
+        prompt: formattedPrompt
+      }]
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+        const errorClone = response.clone();
+        const status = response.status;
+        let errMsg = `Lỗi hệ thống (${status})`;
+        try {
+            const data = await response.json();
+            errMsg = data.error?.message || errMsg;
+        } catch (e) {
+            errMsg = await errorClone.text();
+        }
+        throw new Error(errMsg);
+    }
+
+    const initialOperation = await response.json();
+    let operation = initialOperation;
+    console.info(`[Gem-Lab] Text-to-Video Task: ${operation.name} đã được tạo.`);
+
+    // Polling
+    const maxAttempts = 120;
+    let attempts = 0;
+    
+    while (!operation.done && attempts < maxAttempts) {
+      attempts++;
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      const pollResponse = await fetch(`${baseUrl}/${operation.name}?key=${apiKey}`);
+      if (pollResponse.ok) {
+        operation = await pollResponse.json();
+        console.log(`[Gem-Lab] Text-to-Video Trạng thái (${attempts})...`);
+      }
+    }
+
+    if (!operation.done) throw new Error("Quá thời gian render trên máy chủ Google.");
+
+    const videoUri = 
+        operation.response?.video?.uri ||
+        operation.response?.generatedVideos?.[0]?.video?.uri || 
+        operation.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
+
+    if (!videoUri) throw new Error("Không thể lấy đường dẫn video từ phản hồi.");
+
+    const downloadRes = await fetch(`${videoUri}&key=${apiKey}`);
+    if (!downloadRes.ok) throw new Error("Lỗi tải video từ server Google.");
+    
+    const blob = await downloadRes.blob();
+    
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("Lỗi chuyển đổi dữ liệu video."));
+        reader.readAsDataURL(blob);
+    });
+
+  } catch (error: any) {
+    console.error("[Gem-Lab] Error in generateTextToVideo:", error);
+    throw error;
   }
 };
 
@@ -374,14 +539,15 @@ export const generateStudioImage = async (
   modelName: string,
   upscaleResolution: string = '4K'
 ): Promise<string> => {
-  const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+  const apiKey = localStorage.getItem('gem_lab_api_key') || import.meta.env.VITE_GEMINI_API_KEY;
+  const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: modelName });
 
   let finalPrompt = '';
   const payloadParts: Part[] = [];
 
   if (inputImage) {
-      payloadParts.push({ inlineData: { mimeType: inputImage.mimeType, data: inputImage.base64.split(',')[1] || inputImage.base64 } });
+    payloadParts.push({ inlineData: { mimeType: inputImage.mimeType, data: inputImage.base64.split(',')[1] || inputImage.base64 } });
   }
 
   switch (studioMode) {
@@ -402,16 +568,17 @@ export const generateStudioImage = async (
 
   payloadParts.unshift({ text: finalPrompt });
 
-  const imageConfig: { imageSize?: string; aspectRatio?: string } = {}; // Adjust as needed for studio
-  // For upscale, we might want to specify a larger output size if the model supports it.
-  if (studioMode === 'UPSCALE' && modelName.includes('pro')) {
-      imageConfig.imageSize = upscaleResolution; // Dynamic resolution based on user selection
+  const generationConfig: any = {};
+  if (modelName.includes('imagen')) {
+    if (studioMode === 'UPSCALE' && modelName.includes('pro')) {
+      generationConfig.imageSize = upscaleResolution;
+    }
   }
 
   try {
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: payloadParts }],
-      generationConfig: { ...imageConfig } as any
+      generationConfig: generationConfig
     });
 
     const response = result.response;
